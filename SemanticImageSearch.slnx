@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="SemanticImageSearch.API/SemanticImageSearch.API.csproj" />
+  <Project Path="SemanticImageSearch.Core/SemanticImageSearch.Core.csproj" />
+  <Project Path="SemanticImageSearch.Indexer/SemanticImageSearch.Indexer.csproj" />
+  <Project Path="SemanticImageSearch.Web/semanticimagesearch.web.esproj">
+    <Build />
+    <Deploy />
+  </Project>
+</Solution>

@@ -1,0 +1,19 @@
+@SemanticImageSearch.API_HostAddress = http://localhost:5256
+
+### Search by text
+GET {{SemanticImageSearch.API_HostAddress}}/api/search?query=dog%20on%20the%20beach&limit=10
+Accept: application/json
+
+### Search by text within a date-taken range (both dates inclusive)
+GET {{SemanticImageSearch.API_HostAddress}}/api/search?query=dog%20on%20the%20beach&from=2023-01-01&to=2023-12-31&limit=10
+Accept: application/json
+
+### Search by text taken on or after a date
+GET {{SemanticImageSearch.API_HostAddress}}/api/search?query=birthday%20cake&from=2024-06-01
+Accept: application/json
+
+### Get an image by id (replace with an id from a search result)
+@imageId = 00000000-0000-0000-0000-000000000000
+GET {{SemanticImageSearch.API_HostAddress}}/api/images/{{imageId}}
+
+###
