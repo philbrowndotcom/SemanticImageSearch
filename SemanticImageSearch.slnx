@@ -2,7 +2,7 @@
   <Project Path="SemanticImageSearch.API/SemanticImageSearch.API.csproj" />
   <Project Path="SemanticImageSearch.Core/SemanticImageSearch.Core.csproj" />
   <Project Path="SemanticImageSearch.Indexer/SemanticImageSearch.Indexer.csproj" />
-  <Project Path="SemanticImageSearch.Web/semanticimagesearch.web.esproj">
+  <Project Path="SemanticImageSearch.Web/semanticimagesearch.web.esproj" DisplayName="SemanticImageSearch.Web">
     <Build />
     <Deploy />
   </Project>
