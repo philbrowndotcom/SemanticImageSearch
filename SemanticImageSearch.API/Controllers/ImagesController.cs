@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
+using SemanticImageSearch.Core.Options;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -14,10 +16,12 @@ public class ImagesController : ControllerBase
     };
 
     private readonly QdrantClient _qdrantClient;
+    private readonly QdrantOptions _qdrantOptions;
 
-    public ImagesController(QdrantClient qdrantClient)
+    public ImagesController(QdrantClient qdrantClient, IOptions<QdrantOptions> qdrantOptions)
     {
         _qdrantClient = qdrantClient;
+        _qdrantOptions = qdrantOptions.Value;
     }
 
     // Images are resolved by point id (never by raw path) to prevent arbitrary file access.
@@ -26,7 +30,7 @@ public class ImagesController : ControllerBase
     public async Task<IActionResult> Get(Guid id)
     {
         var points = await _qdrantClient.RetrieveAsync(
-            collectionName: SearchController.CollectionName,
+            collectionName: _qdrantOptions.CollectionName,
             id: id,
             withPayload: true,
             withVectors: false);

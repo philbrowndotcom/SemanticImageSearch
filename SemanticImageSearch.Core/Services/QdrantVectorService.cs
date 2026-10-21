@@ -1,18 +1,22 @@
-﻿using Qdrant.Client;
+﻿using System.Security.Cryptography;
+using System.Text;
+using Qdrant.Client;
 using Qdrant.Client.Grpc;
 using SemanticImageSearch.Core.Interfaces;
 using SemanticImageSearch.Core.Models;
+using SemanticImageSearch.Core.Options;
 
 namespace SemanticImageSearch.Core.Services;
 
 public class QdrantVectorService : IVectorDatabaseService
 {
     private readonly QdrantClient _client;
-    private const string CollectionName = "image_library";
+    private readonly string CollectionName;
 
-    public QdrantVectorService(string host = "localhost", int port = 6334)
+    public QdrantVectorService(QdrantOptions options)
     {
-        _client = new QdrantClient(host, port);
+        _client = new QdrantClient(options.Host, options.Port);
+        CollectionName = options.CollectionName;
     }
 
     public async Task EnsureCollectionExistsAsync(ulong vectorSize)
@@ -45,7 +49,7 @@ public class QdrantVectorService : IVectorDatabaseService
 
     public async Task UpsertImageAsync(ImageRecord record)
     {
-        var pointId = Guid.NewGuid();
+        var pointId = CreatePointId(record.FilePath);
 
         await _client.UpsertAsync(
             collectionName: CollectionName,
@@ -64,5 +68,44 @@ public class QdrantVectorService : IVectorDatabaseService
                     }
                 }
             });
+    }
+
+    public async Task<HashSet<string>> GetIndexedFilePathsAsync()
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        PointId? offset = null;
+
+        do
+        {
+            var page = await _client.ScrollAsync(
+                collectionName: CollectionName,
+                limit: 1000,
+                offset: offset,
+                payloadSelector: new WithPayloadSelector
+                {
+                    Include = new PayloadIncludeSelector { Fields = { "file_path" } }
+                },
+                vectorsSelector: false);
+
+            foreach (var point in page.Result)
+            {
+                if (point.Payload.TryGetValue("file_path", out var value) && !string.IsNullOrEmpty(value.StringValue))
+                {
+                    paths.Add(value.StringValue);
+                }
+            }
+
+            offset = page.NextPageOffset;
+        }
+        while (offset is not null);
+
+        return paths;
+    }
+
+    // Same file path always maps to the same point id, so re-upserting a file overwrites instead of duplicating.
+    private static Guid CreatePointId(string filePath)
+    {
+        var normalized = Path.GetFullPath(filePath).ToUpperInvariant();
+        return new Guid(MD5.HashData(Encoding.UTF8.GetBytes(normalized)));
     }
 }

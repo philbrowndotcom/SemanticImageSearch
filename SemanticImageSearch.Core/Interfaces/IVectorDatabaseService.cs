@@ -8,5 +8,6 @@ namespace SemanticImageSearch.Core.Interfaces
     {
         Task EnsureCollectionExistsAsync(ulong vectorSize);
         Task UpsertImageAsync(Models.ImageRecord record);
+        Task<HashSet<string>> GetIndexedFilePathsAsync();
     }
 }

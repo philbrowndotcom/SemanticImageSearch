@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
+using SemanticImageSearch.Core.Options;
 
 const string WebClientCorsPolicy = "WebClient";
 
@@ -10,16 +12,25 @@ builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-builder.Services.AddSingleton(_ => new QdrantClient("localhost", 6334));
-builder.Services.AddHttpClient(SearchController.OllamaClientName, client =>
+builder.Services.Configure<QdrantOptions>(builder.Configuration.GetSection(QdrantOptions.SectionName));
+builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection(OllamaOptions.SectionName));
+
+builder.Services.AddSingleton(sp =>
 {
-    client.BaseAddress = new Uri("http://localhost:11434");
+    var qdrant = sp.GetRequiredService<IOptions<QdrantOptions>>().Value;
+    return new QdrantClient(qdrant.Host, qdrant.Port);
+});
+builder.Services.AddHttpClient(SearchController.OllamaClientName, (sp, client) =>
+{
+    var ollama = sp.GetRequiredService<IOptions<OllamaOptions>>().Value;
+    client.BaseAddress = new Uri(ollama.BaseUrl);
 });
 
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(WebClientCorsPolicy, policy =>
-        policy.WithOrigins("http://localhost:54879", "https://localhost:54879")
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod());
 });

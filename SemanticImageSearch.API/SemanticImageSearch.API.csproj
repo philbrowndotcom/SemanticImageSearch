@@ -11,4 +11,8 @@
     <PackageReference Include="Qdrant.Client" Version="1.19.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\SemanticImageSearch.Core\SemanticImageSearch.Core.csproj" />
+  </ItemGroup>
+
 </Project>

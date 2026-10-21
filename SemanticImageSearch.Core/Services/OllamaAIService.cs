@@ -1,28 +1,20 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using SemanticImageSearch.Core.Interfaces;
+using SemanticImageSearch.Core.Options;
 
 namespace SemanticImageSearch.Core.Services;
 
 public class OllamaAIService : ILLaVAEmbeddingService
 {
 	private readonly HttpClient _client;
+	private readonly OllamaOptions _options;
 
-	private const string DescriptionPrompt =
-		"Describe only what is visible in this photo, in plain factual language. " +
-		"List the people, animals, objects, text, landmarks, and setting (indoor/outdoor, location type, time of day, weather) that you can see, " +
-		"along with their main colors, positions, and what any people or animals are doing. " +
-		"Name well-known landmarks or objects if you recognize them. " +
-		"Do not describe mood, atmosphere, emotions, symbolism, history, or significance. " +
-		"Do not use subjective or decorative adjectives such as beautiful, serene, iconic, majestic, proud, stunning, or vibrant. " +
-		"Do not comment on the photo's composition, orientation, or quality, and do not speculate beyond what is shown. " +
-		"Write 2 to 4 short, direct sentences.";
-
-	public OllamaAIService(HttpClient client)
+	public OllamaAIService(HttpClient client, OllamaOptions options)
 	{
 		_client = client;
-		// Pointing to your local Ollama instance
-		_client.BaseAddress = new Uri("http://localhost:11434");
+		_options = options;
+		_client.BaseAddress ??= new Uri(options.BaseUrl);
 	}
 
 	public async Task<string> GetImageDescriptionAsync(string imagePath)
@@ -32,11 +24,11 @@ public class OllamaAIService : ILLaVAEmbeddingService
 
 		var requestPayload = new
 		{
-			model = "llava",
-			prompt = DescriptionPrompt,
+			model = _options.VisionModel,
+			prompt = _options.DescriptionPrompt,
 			images = new[] { base64Image },
 			stream = false,
-			options = new { temperature = 0.2 }
+			options = new { temperature = _options.Temperature }
 		};
 
 		HttpResponseMessage response = await _client.PostAsJsonAsync("/api/generate", requestPayload);
@@ -50,7 +42,7 @@ public class OllamaAIService : ILLaVAEmbeddingService
 	{
 		var requestPayload = new
 		{
-			model = "nomic-embed-text",
+			model = _options.EmbeddingModel,
 			prompt = text
 		};
 

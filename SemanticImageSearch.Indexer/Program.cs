@@ -1,42 +1,67 @@
-﻿using SemanticImageSearch.Core.Interfaces;
+﻿using Microsoft.Extensions.Configuration;
+using SemanticImageSearch.Core.Interfaces;
 using SemanticImageSearch.Core.Models;
+using SemanticImageSearch.Core.Options;
 using SemanticImageSearch.Core.Services;
 
 class Program
 {
     static async Task Main(string[] args)
     {
-        // 1. Specify your picture library path here
-        string pictureLibraryPath = @"D:\Media\images\Phone pics\Camera";
+        // 1. Load settings: appsettings.json < environment variables (SIS_ prefix) < command line
+        //    e.g. --Indexer:PictureLibraryPath "C:\Photos" or --path "C:\Photos"
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables(prefix: "SIS_")
+            .AddCommandLine(args, new Dictionary<string, string>
+            {
+                ["--path"] = "Indexer:PictureLibraryPath",
+                ["-p"] = "Indexer:PictureLibraryPath"
+            })
+            .Build();
 
-        if (!Directory.Exists(pictureLibraryPath))
+        var indexerOptions = configuration.GetSection(IndexerOptions.SectionName).Get<IndexerOptions>() ?? new IndexerOptions();
+        var qdrantOptions = configuration.GetSection(QdrantOptions.SectionName).Get<QdrantOptions>() ?? new QdrantOptions();
+        var ollamaOptions = configuration.GetSection(OllamaOptions.SectionName).Get<OllamaOptions>() ?? new OllamaOptions();
+
+        string pictureLibraryPath = indexerOptions.PictureLibraryPath;
+
+        if (string.IsNullOrWhiteSpace(pictureLibraryPath) || !Directory.Exists(pictureLibraryPath))
         {
-            Console.WriteLine($"Directory not found: {pictureLibraryPath}");
-            Console.WriteLine("Please update the pictureLibraryPath variable in Program.cs.");
+            Console.WriteLine($"Directory not found: '{pictureLibraryPath}'");
+            Console.WriteLine("Set Indexer:PictureLibraryPath in appsettings.json, or pass --path \"C:\\Your\\Photos\".");
             return;
         }
 
         Console.WriteLine($"Initializing SemanticImageSearch Indexer...");
+        Console.WriteLine($"  Pictures: {pictureLibraryPath}");
+        Console.WriteLine($"  Qdrant:   {qdrantOptions.Host}:{qdrantOptions.Port} / {qdrantOptions.CollectionName}");
+        Console.WriteLine($"  Ollama:   {ollamaOptions.BaseUrl} ({ollamaOptions.VisionModel}, {ollamaOptions.EmbeddingModel})");
 
         // 2. Instantiate services (using standard HttpClient and Qdrant client)
         using var httpClient = new HttpClient();
-        ILLaVAEmbeddingService aiService = new OllamaAIService(httpClient);
-        IVectorDatabaseService dbService = new QdrantVectorService("localhost", 6334);
+        ILLaVAEmbeddingService aiService = new OllamaAIService(httpClient, ollamaOptions);
+        IVectorDatabaseService dbService = new QdrantVectorService(qdrantOptions);
 
-        // 3. Ensure Qdrant collection exists (768 dimensions for nomic-embed-text)
+        // 3. Ensure Qdrant collection exists
         Console.WriteLine("Connecting to Qdrant and ensuring collection exists...");
-        await dbService.EnsureCollectionExistsAsync(vectorSize: 768);
+        await dbService.EnsureCollectionExistsAsync(vectorSize: qdrantOptions.VectorSize);
 
         // 4. Scan directory for supported image formats
-        var supportedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
+        var supportedExtensions = new HashSet<string>(indexerOptions.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
         var imageFiles = Directory.GetFiles(pictureLibraryPath, "*.*", SearchOption.AllDirectories)
-            .Where(file => supportedExtensions.Contains(Path.GetExtension(file).ToLower()))
+            .Where(file => supportedExtensions.Contains(Path.GetExtension(file)))
             .ToArray();
 
-        Console.WriteLine($"Found {imageFiles.Length} images to process.");
+        // 5. Skip images that are already indexed
+        var indexedPaths = await dbService.GetIndexedFilePathsAsync();
+        var newFiles = imageFiles.Where(file => !indexedPaths.Contains(file)).ToArray();
 
-        // 5. Iterate and process images
-        foreach (var file in imageFiles)
+        Console.WriteLine($"Found {imageFiles.Length} images; {imageFiles.Length - newFiles.Length} already indexed, {newFiles.Length} new to process.");
+
+        // 6. Iterate and process new images
+        foreach (var file in newFiles)
         {
             try
             {

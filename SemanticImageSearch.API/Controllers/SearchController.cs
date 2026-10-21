@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Qdrant.Client;
+using SemanticImageSearch.Core.Options;
 using Qdrant.Client.Grpc;
 using System.Text.Json.Serialization;
 
@@ -9,13 +11,20 @@ public class SearchController : ControllerBase
 {
     private readonly QdrantClient _qdrantClient;
     private readonly HttpClient _httpClient;
-    public const string CollectionName = "image_library"; // Must match QdrantVectorService collection name
+    private readonly QdrantOptions _qdrantOptions;
+    private readonly OllamaOptions _ollamaOptions;
     public const string OllamaClientName = "ollama";
 
-    public SearchController(QdrantClient qdrantClient, IHttpClientFactory httpClientFactory)
+    public SearchController(
+        QdrantClient qdrantClient,
+        IHttpClientFactory httpClientFactory,
+        IOptions<QdrantOptions> qdrantOptions,
+        IOptions<OllamaOptions> ollamaOptions)
     {
         _qdrantClient = qdrantClient;
         _httpClient = httpClientFactory.CreateClient(OllamaClientName);
+        _qdrantOptions = qdrantOptions.Value;
+        _ollamaOptions = ollamaOptions.Value;
     }
 
     [HttpGet]
@@ -44,7 +53,7 @@ public class SearchController : ControllerBase
 
             // 2. Search Qdrant for nearest neighbor vectors, optionally filtered by date taken
             var searchResults = await _qdrantClient.QueryAsync(
-                collectionName: CollectionName,
+                collectionName: _qdrantOptions.CollectionName,
                 query: queryVector,
                 filter: BuildDateTakenFilter(from, to),
                 payloadSelector: true,
@@ -109,8 +118,8 @@ public class SearchController : ControllerBase
 
     private async Task<float[]> GetEmbeddingAsync(string text)
     {
-        // Adjust model name if you use a dedicated embedding model in Ollama (e.g., "nomic-embed-text")
-        var requestPayload = new { model = "nomic-embed-text", prompt = text };
+        // Must be the same embedding model the Indexer used
+        var requestPayload = new { model = _ollamaOptions.EmbeddingModel, prompt = text };
 
         var response = await _httpClient.PostAsJsonAsync("/api/embeddings", requestPayload);
         response.EnsureSuccessStatusCode();

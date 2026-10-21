@@ -63,21 +63,26 @@ Everything runs locally. Images are captioned by a vision model (LLaVA), the cap
 
 ### 1. Point the Indexer at your photos
 
-The picture folder is set in `SemanticImageSearch.Indexer/Program.cs`:
+Set `Indexer:PictureLibraryPath` in `SemanticImageSearch.Indexer/appsettings.json`:
 
-```csharp
-string pictureLibraryPath = @"D:\Media\images\Phone pics\Camera";
+```json
+"Indexer": {
+  "PictureLibraryPath": "C:\\Path\\To\\Your\\Photos"
+}
 ```
 
-Change it to your own folder. Subfolders are included. Supported formats: `.jpg`, `.jpeg`, `.png`, `.webp`.
+Or pass it on the command line (see below). Subfolders are included. Supported formats: `.jpg`, `.jpeg`, `.png`, `.webp` (configurable via `Indexer:SupportedExtensions`).
 
 ### 2. Index the images
 
 ```powershell
 dotnet run --project SemanticImageSearch.Indexer
+
+# or override the folder for this run
+dotnet run --project SemanticImageSearch.Indexer -- --path "C:\Path\To\Your\Photos"
 ```
 
-The Indexer creates the `image_library` collection if needed and prints each caption as it goes. Captioning runs on your machine, so expect anywhere from a few seconds to tens of seconds per image depending on your GPU.
+The Indexer creates the `image_library` collection if needed and prints each caption as it goes. On later runs it only processes **new** images; files already in the collection are skipped.
 
 ### 3. Start the API
 
@@ -157,24 +162,51 @@ A datetime payload index is created on `date_taken` to keep date-range filtering
 
 ## Configuration
 
-These settings are currently hard-coded:
+Settings live in `appsettings.json` for the Indexer and the API. Both share the `Qdrant` and `Ollama` sections. Keep `CollectionName` and `EmbeddingModel` identical in both, or searches won't match what was indexed.
+
+| Key | Used by | Default |
+|---|---|---|
+| `Indexer:PictureLibraryPath` | Indexer | `D:\Media\images\Phone pics\Camera` |
+| `Indexer:SupportedExtensions` | Indexer | `.jpg`, `.jpeg`, `.png`, `.webp` |
+| `Qdrant:Host` / `Qdrant:Port` | Indexer, API | `localhost` / `6334` (gRPC) |
+| `Qdrant:CollectionName` | Indexer, API | `image_library` |
+| `Qdrant:VectorSize` | Indexer | `768` (must match the embedding model) |
+| `Ollama:BaseUrl` | Indexer, API | `http://localhost:11434` |
+| `Ollama:VisionModel` | Indexer | `llava` |
+| `Ollama:EmbeddingModel` | Indexer, API | `nomic-embed-text` |
+| `Ollama:Temperature` | Indexer | `0.2` |
+| `Ollama:DescriptionPrompt` | Indexer | Factual, 2–4 sentences (see `OllamaOptions.cs`) |
+| `Cors:AllowedOrigins` | API | `http://localhost:54879`, `https://localhost:54879` |
+
+### Overriding settings
+
+Later sources override earlier ones:
+
+1. `appsettings.json`
+2. Environment variables. The Indexer uses a `SIS_` prefix, e.g. `SIS_Indexer__PictureLibraryPath`; the API uses standard ASP.NET Core names, e.g. `Qdrant__Host`.
+3. Command-line arguments, e.g. `--Qdrant:Host myserver`. The Indexer also accepts `--path` / `-p` as a shortcut for `--Indexer:PictureLibraryPath`.
+
+Examples:
+
+```powershell
+dotnet run --project SemanticImageSearch.Indexer -- --path "E:\Photos" --Ollama:VisionModel llava:13b
+dotnet run --project SemanticImageSearch.API --launch-profile http -- --Qdrant:Host qdrant.local
+```
+
+### Ports
+
+These stay in their standard tooling files:
 
 | Setting | Location | Default |
 |---|---|---|
-| Picture folder | `SemanticImageSearch.Indexer/Program.cs` | `D:\Media\images\Phone pics\Camera` |
-| Qdrant host/port | `SemanticImageSearch.Indexer/Program.cs`, `SemanticImageSearch.API/Program.cs` | `localhost:6334` |
-| Ollama URL | `SemanticImageSearch.Core/Services/OllamaAIService.cs`, `SemanticImageSearch.API/Program.cs` | `http://localhost:11434` |
-| Caption prompt | `SemanticImageSearch.Core/Services/OllamaAIService.cs` (`DescriptionPrompt`) | Factual, 2–4 sentences |
-| Collection name | `QdrantVectorService.CollectionName`, `SearchController.CollectionName` | `image_library` |
 | API port | `SemanticImageSearch.API/Properties/launchSettings.json` | `5256` |
 | UI port and API proxy | `SemanticImageSearch.Web/vite.config.ts` | `54879` → `http://localhost:5256` |
-| CORS origin | `SemanticImageSearch.API/Program.cs` | `http://localhost:54879` |
 
-## Re-indexing
+## Incremental indexing and re-indexing
 
-Each run of the Indexer processes every image again and gives each one a **new random point ID**. Running it twice on the same folder creates duplicates.
+At startup the Indexer reads every `file_path` already stored in Qdrant and skips those files, so only newly added images are captioned. Each point ID is derived from the file's full path, so the same file always maps to the same point and can never be stored twice.
 
-To re-index cleanly, for example after changing the caption prompt:
+To re-index everything, for example after changing the caption prompt:
 
 1. Delete the `image_library` collection in the Qdrant dashboard (<http://localhost:6333/dashboard>), or with:
    ```powershell
@@ -184,7 +216,6 @@ To re-index cleanly, for example after changing the caption prompt:
 
 ## Limitations and ideas
 
-- No incremental indexing: unchanged images are re-captioned on every run. A deterministic point ID (for example, a hash of the file path) plus a `last_modified_utc` check would fix both this and the duplicates.
-- Settings are hard-coded rather than read from `appsettings.json` or command-line arguments.
+- Images are assumed not to change once indexed. Edited files aren't re-captioned, and deleted or moved files aren't removed from the collection (a moved file is indexed again under its new path).
 - The API reads images straight from their original paths, so it must run on the same machine as the photo library (or with the same paths mounted).
 - Captions are only as good as LLaVA's interpretation of each photo. Text search matches the caption, not the pixels.
