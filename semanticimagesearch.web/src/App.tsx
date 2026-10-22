@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { imageUrl, searchImages } from './api/search.ts'
+import { getPeople, imageUrl, searchImages } from './api/search.ts'
 import type { SearchResult } from './api/search.ts'
 import './App.css'
 
@@ -18,6 +18,8 @@ function App() {
   const [query, setQuery] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
+  const [availablePeople, setAvailablePeople] = useState<string[]>([])
+  const [selectedPeople, setSelectedPeople] = useState<string[]>([])
   const [limit, setLimit] = useState(25)
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -26,11 +28,23 @@ function App() {
   const abortRef = useRef<AbortController | null>(null)
 
   const dateRangeInvalid = from !== '' && to !== '' && from > to
+  const hasFilters = selectedPeople.length > 0 || from !== '' || to !== ''
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getPeople(controller.signal)
+      .then(setAvailablePeople)
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setError(err instanceof Error ? err.message : 'Could not load people.')
+      })
+    return () => controller.abort()
+  }, [])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const trimmed = query.trim()
-    if (!trimmed || dateRangeInvalid) return
+    if ((!trimmed && !hasFilters) || dateRangeInvalid) return
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -40,7 +54,13 @@ function App() {
     setError(null)
     try {
       const data = await searchImages(
-        { query: trimmed, from: from || undefined, to: to || undefined, limit },
+        {
+          query: trimmed || undefined,
+          from: from || undefined,
+          to: to || undefined,
+          people: selectedPeople,
+          limit,
+        },
         controller.signal,
       )
       setResults(data)
@@ -59,6 +79,7 @@ function App() {
     setQuery('')
     setFrom('')
     setTo('')
+    setSelectedPeople([])
     setResults([])
     setError(null)
     setHasSearched(false)
@@ -81,9 +102,29 @@ function App() {
             placeholder="e.g. dog playing on the beach at sunset"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            required
             autoFocus
           />
+        </div>
+
+        <div className="field people-field">
+          <label htmlFor="people">People</label>
+          <select
+            id="people"
+            multiple
+            value={selectedPeople}
+            onChange={(e) =>
+              setSelectedPeople(Array.from(e.target.selectedOptions, (option) => option.value))
+            }
+            size={Math.min(Math.max(availablePeople.length, 2), 5)}
+            disabled={availablePeople.length === 0}
+          >
+            {availablePeople.map((person) => (
+              <option key={person} value={person}>
+                {person}
+              </option>
+            ))}
+          </select>
+          {availablePeople.length === 0 && <small>No identified people available</small>}
         </div>
 
         <div className="field">
@@ -120,7 +161,7 @@ function App() {
         </div>
 
         <div className="actions">
-          <button type="submit" disabled={loading || !query.trim() || dateRangeInvalid}>
+          <button type="submit" disabled={loading || (!query.trim() && !hasFilters) || dateRangeInvalid}>
             {loading ? 'Searching…' : 'Search'}
           </button>
           <button type="button" className="secondary" onClick={handleClear}>
@@ -154,6 +195,7 @@ function App() {
                   {(r.score * 100).toFixed(1)}%
                 </span>
               </div>
+              {r.peopleNames && <p className="people-names"><strong>People:</strong> {r.peopleNames}</p>}
               {r.description && <p className="description">{r.description}</p>}
             </div>
           </li>

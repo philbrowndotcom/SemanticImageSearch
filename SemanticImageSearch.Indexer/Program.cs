@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration;
 using SemanticImageSearch.Core.Interfaces;
 using SemanticImageSearch.Core.Models;
 using SemanticImageSearch.Core.Options;
@@ -6,8 +6,108 @@ using SemanticImageSearch.Core.Services;
 
 class Program
 {
+    private static async Task<List<string>> IdentifyPeopleAsync(
+        IFaceDetector detector,
+        IFaceRecognizer recognizer,
+        IFaceRegistry registry,
+        string imagePath,
+        float threshold = 0.45f)
+    {
+        var detectedFaces = await detector.DetectFacesAsync(imagePath);
+        var names = new List<string>();
+
+        foreach (var face in detectedFaces)
+        {
+            var embedding = await recognizer.GenerateFaceEmbeddingAsync(imagePath, face);
+            var closest = registry.FindClosest(embedding);
+
+            if (closest != null && closest.Similarity >= threshold && !string.IsNullOrWhiteSpace(closest.Name))
+            {
+                names.Add(closest.Name);
+            }
+        }
+
+        return names
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     static async Task Main(string[] args)
     {
+        // --- Face Detection, Recognition & Registry Batch Test ---
+        var detectorModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "2.5g_bnkps.onnx");
+        var recognizerModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "w600k_mbf.onnx");
+
+        using var detector = new ScrfdFaceDetector(detectorModelPath);
+        using var recognizer = new ArcFaceRecognizer(recognizerModelPath);
+        var registry = new FaceRegistry(detector, recognizer);
+
+        // 1. Locate and load reference faces
+        string refFacesDir = Directory.Exists("ReferenceFaces")
+            ? Path.GetFullPath("ReferenceFaces")
+            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "ReferenceFaces"));
+
+        await registry.LoadReferencesAsync(refFacesDir);
+
+        // 2. Scan a batch of 100 photos from the target folder
+        string targetFolder = @"D:\Media\images\Natis Phone 4_23_16";
+        var supportedExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".webp" };
+        var files = Directory.GetFiles(targetFolder, "*.*", SearchOption.AllDirectories)
+            .Where(f => supportedExts.Contains(Path.GetExtension(f)))
+            .Take(100)
+            .ToList();
+
+        Console.WriteLine($"\n[Batch Face Matching] Scanning {files.Count} photos from: {targetFolder}\n");
+
+        var matchCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        int totalFacesFound = 0;
+        int photosWithFaces = 0;
+
+        foreach (var file in files)
+        {
+            var faces = await detector.DetectFacesAsync(file);
+            if (faces.Count == 0) continue;
+
+            photosWithFaces++;
+            totalFacesFound += faces.Count;
+            Console.WriteLine($"📷 {Path.GetFileName(file)} -> {faces.Count} face(s):");
+
+            for (int i = 0; i < faces.Count; i++)
+            {
+                var face = faces[i];
+                var embedding = await recognizer.GenerateFaceEmbeddingAsync(file, face);
+                var closest = registry.FindClosest(embedding);
+
+                if (closest != null && closest.Similarity >= 0.45f)
+                {
+                    matchCounts[closest.Name] = matchCounts.GetValueOrDefault(closest.Name) + 1;
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ⭐️ \"{closest.Name}\" (Match: {closest.Similarity:P1})");
+                }
+                else if (closest != null)
+                {
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ❓ Unknown (Closest: \"{closest.Name}\" @ {closest.Similarity:P1})");
+                }
+                else
+                {
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ❓ Unknown face");
+                }
+            }
+        }
+
+        Console.WriteLine($"\n========================================");
+        Console.WriteLine($"📊 SUMMARY of {files.Count} photos:");
+        Console.WriteLine($"   Photos with faces: {photosWithFaces} / {files.Count}");
+        Console.WriteLine($"   Total faces found: {totalFacesFound}");
+        Console.WriteLine($"   Identified people (>= 45%):");
+        foreach (var (person, count) in matchCounts.OrderByDescending(kv => kv.Value))
+        {
+            Console.WriteLine($"     - {person}: {count} time(s)");
+        }
+        Console.WriteLine($"========================================\n");
+
+        //return; // Stop here so we only test face recognition for now
+
         // 1. Load settings: appsettings.json < environment variables (SIS_ prefix) < command line
         //    e.g. --Indexer:PictureLibraryPath "C:\Photos" or --path "C:\Photos"
         var configuration = new ConfigurationBuilder()
@@ -72,18 +172,23 @@ class Program
                 Console.Write("  -> Generating LLaVA description...");
                 string description = await aiService.GetImageDescriptionAsync(file);
                 Console.WriteLine(" Done.");
+
+                // Step B: Match known faces and store names independently from the description
+                var knownPeople = await IdentifyPeopleAsync(detector, recognizer, registry, file);
+
                 Console.WriteLine($"     Caption: \"{description}\"");
 
-                // Step B: Generate vector embedding using nomic-embed-text via Ollama
+                // Step C: Generate vector embedding using nomic-embed-text via Ollama
                 Console.Write("  -> Generating text embedding...");
                 float[] vector = await aiService.GetTextEmbeddingAsync(description);
                 Console.WriteLine($" Done. ({vector.Length} dimensions)");
 
-                // Step C: Prepare model and upsert to Qdrant
+                // Step D: Prepare model and upsert to Qdrant
                 var record = new ImageRecord
                 {
                     FilePath = file,
                     Description = description,
+                    PeopleNames = knownPeople,
                     Vector = vector,
                     LastModifiedUtc = fileInfo.LastWriteTimeUtc,
                     DateTaken = ExifDateReader.GetDateTakenUtc(file, fileInfo.CreationTimeUtc)
@@ -102,3 +207,4 @@ class Program
         Console.WriteLine("\n✨ Indexing complete!");
     }
 }
+

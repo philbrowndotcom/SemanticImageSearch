@@ -8,12 +8,19 @@ Everything runs locally. Images are captioned by a vision model (LLaVA), the cap
 
 ```
 				 Indexing (one-off / repeatable)
- ┌────────────┐   image    ┌──────────────┐  caption   ┌──────────────────┐
+  ┌────────────┐   image    ┌──────────────┐  caption   ┌──────────────────┐
  │  Indexer   │ ─────────▶ │ Ollama: llava│ ─────────▶ │ Ollama:          │
  │ (console)  │            └──────────────┘            │ nomic-embed-text │
- └────────────┘ ◀────────────── 768-dim vector ─────── └──────────────────┘
+ └──────┬─────┘ ◀────────────── 768-dim vector ─────── └──────────────────┘
+		│
+		│ face boxes → ArcFace embeddings → reference matches
+		▼
+ ┌────────────┐      ┌──────────────┐      ┌────────────────┐
+ │ SCRFD      │ ───▶ │ ArcFace      │ ───▶ │ FaceRegistry   │
+ │ detector   │      │ recognizer   │      │ ReferenceFaces │
+ └────────────┘      └──────────────┘      └────────────────┘
 	   │
-	   │ vector + payload (file_path, description, date_taken, ...)
+		  │ vector + payload (file_path, description, people_names, date_taken, ...)
 	   ▼
  ┌────────────┐
  │   Qdrant   │  collection: image_library
@@ -33,16 +40,41 @@ Everything runs locally. Images are captioned by a vision model (LLaVA), the cap
    - reads the capture date from EXIF;
    - stores the vector and metadata in Qdrant.
 2. **Searching:** the API embeds the search text with the same model and asks Qdrant for the nearest vectors (cosine similarity). It can also filter on `date_taken`.
-3. **Viewing:** the UI shows the results as a thumbnail grid. Images are served by the API by their Qdrant point ID, never by file path.
+3. **People recognition:** the Indexer detects faces with SCRFD, generates an ArcFace embedding for each detected face, and compares it with the embeddings loaded from `ReferenceFaces`. Matches at or above the current `0.45` similarity threshold are stored as the independent `people_names` payload field. Names are not appended to the LLaVA description, so semantic captions remain factual image descriptions.
+4. **Viewing:** the UI shows the results as a thumbnail grid. Images are served by the API by their Qdrant point ID, never by file path.
+
+## Face detection and recognition pipeline
+
+Face recognition runs during indexing, alongside captioning and embedding generation. It is a separate pipeline from LLaVA semantic description:
+
+1. **SCRFD face detection:** `ScrfdFaceDetector` uses `MLModels/2.5g_bnkps.onnx` to locate faces in the image and return bounding boxes with detection confidence.
+2. **Face embedding:** `ArcFaceRecognizer` uses `MLModels/w600k_mbf.onnx` to generate a numerical embedding for each detected face. The embedding represents facial features for similarity comparison; it is not a name by itself.
+3. **Reference registry:** `FaceRegistry` loads reference images from `ReferenceFaces`. A person's name comes from the reference image's immediate subfolder, or from the filename when the image is directly in `ReferenceFaces`:
+
+   ```text
+   ReferenceFaces/
+   ├── Alice/
+   │   ├── alice-1.jpg
+   │   └── alice-2.jpg
+   ├── Bob/
+   │   └── bob-1.jpg
+   └── Charlie.jpg
+   ```
+
+   The first two images register the person as `Alice`, the third as `Bob`, and `Charlie.jpg` registers the person as `Charlie`. Multiple reference images improve matching across poses and lighting.
+4. **Matching:** each photo face is compared with the registered embeddings. The Indexer currently considers a match when similarity is at least `0.45`. Recognized names are deduplicated and stored as an array in the image's `people_names` Qdrant payload.
+5. **Searching:** `GET /api/people` returns the distinct recognized names found in indexed payloads. The UI uses that list for its multi-select. Selected names are sent as repeated `people` parameters to `GET /api/search`; an image must contain all selected people. People/date-only searches do not call Ollama because they use Qdrant payload filters directly.
+
+The current face matching identifies people only when a suitable reference face exists. Faces that do not meet the threshold remain unnamed and are not added to `people_names`.
 
 ## Projects
 
 | Project | Type | Purpose |
 |---|---|---|
 | `SemanticImageSearch.Core` | Class library (.NET 10) | Shared models and services: `OllamaAIService` (captioning and embeddings), `QdrantVectorService` (collection setup and upserts), `ExifDateReader` (capture date). |
-| `SemanticImageSearch.Indexer` | Console app (.NET 10) | Scans the picture folder and indexes every image into Qdrant. |
-| `SemanticImageSearch.API` | ASP.NET Core Web API (.NET 10) | `GET /api/search` and `GET /api/images/{id}`. |
-| `SemanticImageSearch.Web` | React 19 + TypeScript + Vite | Search UI with an optional date range and a thumbnail grid. |
+| `SemanticImageSearch.Indexer` | Console app (.NET 10) | Scans the picture folder, captions images, detects and matches faces, and indexes each image into Qdrant. |
+| `SemanticImageSearch.API` | ASP.NET Core Web API (.NET 10) | `GET /api/search`, `GET /api/people`, and `GET /api/images/{id}`. |
+| `SemanticImageSearch.Web` | React 19 + TypeScript + Vite | Search UI with text, date and recognized-people filters plus a thumbnail grid. |
 
 ## Prerequisites
 
@@ -53,6 +85,11 @@ Everything runs locally. Images are captioned by a vision model (LLaVA), the cap
   ollama pull llava
   ollama pull nomic-embed-text
   ```
+- The face-recognition ONNX models expected by the Indexer:
+  - `MLModels/2.5g_bnkps.onnx` — SCRFD face detector.
+  - `MLModels/w600k_mbf.onnx` — ArcFace face recognizer.
+  These model files must be available under the Indexer's output directory, normally `SemanticImageSearch.Indexer/bin/Debug/net10.0/MLModels` when running from Visual Studio or `dotnet run`.
+- A `ReferenceFaces` directory containing labeled reference images. See the face-recognition section below for the naming convention.
 - [Qdrant](https://qdrant.tech/). The easiest way to run it is with Docker:
   ```powershell
   docker run -p 6333:6333 -p 6334:6334 -v qdrant_storage:/qdrant/storage qdrant/qdrant
@@ -114,15 +151,22 @@ Right-click the solution, choose **Configure Startup Projects**, then **Multiple
 
 | Parameter | Required | Description |
 |---|---|---|
-| `query` | yes | Text describing what you're looking for. |
+| `query` | conditional | Text describing what you're looking for. Optional when `people`, `from`, or `to` is supplied. |
 | `limit` | no | Number of results, 1–100 (default 10). |
 | `from` | no | Earliest date taken, `yyyy-MM-dd`, inclusive. |
 | `to` | no | Latest date taken, `yyyy-MM-dd`, inclusive of the whole day. |
+| `people` | no | Repeat this parameter for each person. Images must contain all selected people. |
 
 Example:
 
 ```
-GET /api/search?query=dog%20on%20the%20beach&from=2023-01-01&to=2023-12-31&limit=10
+GET /api/search?query=dog%20on%20the%20beach&people=Alice&from=2023-01-01&to=2023-12-31&limit=10
+```
+
+People/date-only search:
+
+```
+GET /api/search?people=Alice&people=Bob&limit=10
 ```
 
 Response:
@@ -133,19 +177,24 @@ Response:
 	"id": "011caa7b-b80a-4408-8ab1-2c73d8fc22da",
 	"filePath": "D:\\Media\\images\\...\\IMG_1234.jpg",
 	"description": "A brown dog runs along a sandy beach next to the water...",
+	"peopleNames": ["Alice", "Bob"],
 	"dateTaken": "2023-07-04T18:22:10.0000000Z",
 	"score": 0.78
   }
 ]
 ```
 
-`score` is the cosine similarity (higher is closer). The request returns `400` if `query` is missing or `from` is after `to`.
+`score` is the cosine similarity (higher is closer). Filter-only results have a score of `0`. The request returns `400` if no query or filter is provided, or if `from` is after `to`.
+
+### `GET /api/people`
+
+Returns a sorted, distinct list of recognized people found in the indexed image payloads. Names come from the subfolders or filenames in the Indexer's `ReferenceFaces` directory.
 
 ### `GET /api/images/{id}`
 
 Returns the image file for a Qdrant point ID, with the correct content type. Returns `404` if the point or the file doesn't exist. Lookup is by ID only, so the browser can't request arbitrary files from disk.
 
-Sample requests for both endpoints are in `SemanticImageSearch.API/SemanticImageSearch.API.http`.
+Sample requests for the API endpoints are in `SemanticImageSearch.API/SemanticImageSearch.API.http`.
 
 ## Data stored in Qdrant
 
@@ -155,6 +204,7 @@ Collection `image_library`, 768-dimension vectors, cosine distance. Each point's
 |---|---|
 | `file_path` | Full path to the image on disk. |
 | `description` | The LLaVA caption that was embedded. |
+| `people_names` | Array of recognized reference-face names. This is independent from `description`. |
 | `date_taken` | Capture date in UTC (ISO 8601). Comes from EXIF `DateTimeOriginal`, then `DateTimeDigitized`, then `DateTime`, and falls back to the file's creation time. EXIF times have no time zone, so they're treated as local time. |
 | `last_modified_utc` | File's last-write time in UTC. |
 
@@ -166,7 +216,7 @@ Settings live in `appsettings.json` for the Indexer and the API. Both share the 
 
 | Key | Used by | Default |
 |---|---|---|
-| `Indexer:PictureLibraryPath` | Indexer | `D:\Media\images\Phone pics\Camera` |
+| `Indexer:PictureLibraryPath` | Indexer | `D:\Media\images\Random Kid Pics` |
 | `Indexer:SupportedExtensions` | Indexer | `.jpg`, `.jpeg`, `.png`, `.webp` |
 | `Qdrant:Host` / `Qdrant:Port` | Indexer, API | `localhost` / `6334` (gRPC) |
 | `Qdrant:CollectionName` | Indexer, API | `image_library` |
@@ -177,6 +227,8 @@ Settings live in `appsettings.json` for the Indexer and the API. Both share the 
 | `Ollama:Temperature` | Indexer | `0.2` |
 | `Ollama:DescriptionPrompt` | Indexer | Factual, 2–4 sentences (see `OllamaOptions.cs`) |
 | `Cors:AllowedOrigins` | API | `http://localhost:54879`, `https://localhost:54879` |
+| Face test target | Indexer (`Program.cs`) | `D:\Media\images\Natis Phone 4_23_16` (first 100 images) |
+| Face match threshold | Indexer (`Program.cs`) | `0.45` |
 
 ### Overriding settings
 
@@ -206,6 +258,10 @@ These stay in their standard tooling files:
 
 At startup the Indexer reads every `file_path` already stored in Qdrant and skips those files, so only newly added images are captioned. Each point ID is derived from the file's full path, so the same file always maps to the same point and can never be stored twice.
 
+The Indexer also runs its current face-recognition batch test before the normal indexing pass. That test uses the hard-coded target folder shown in the configuration table and reports matches to the console; the configurable `Indexer:PictureLibraryPath` is used by the subsequent indexing pass. Face recognition requires the ONNX models and `ReferenceFaces` directory described above.
+
+Because existing files are skipped by path, images indexed before `people_names` was stored as an array will not automatically receive the new people data. Delete the collection and re-index if you need to populate people data for existing images.
+
 To re-index everything, for example after changing the caption prompt:
 
 1. Delete the `image_library` collection in the Qdrant dashboard (<http://localhost:6333/dashboard>), or with:
@@ -217,5 +273,6 @@ To re-index everything, for example after changing the caption prompt:
 ## Limitations and ideas
 
 - Images are assumed not to change once indexed. Edited files aren't re-captioned, and deleted or moved files aren't removed from the collection (a moved file is indexed again under its new path).
+- The face-recognition batch test currently uses a separate hard-coded folder and processes up to 100 images before the normal configurable indexing pass.
 - The API reads images straight from their original paths, so it must run on the same machine as the photo library (or with the same paths mounted).
 - Captions are only as good as LLaVA's interpretation of each photo. Text search matches the caption, not the pixels.

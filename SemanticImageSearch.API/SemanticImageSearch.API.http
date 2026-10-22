@@ -12,6 +12,14 @@ Accept: application/json
 GET {{SemanticImageSearch.API_HostAddress}}/api/search?query=birthday%20cake&from=2024-06-01
 Accept: application/json
 
+### Get available recognized people
+GET {{SemanticImageSearch.API_HostAddress}}/api/people
+Accept: application/json
+
+### Search for images containing both selected people (query is optional)
+GET {{SemanticImageSearch.API_HostAddress}}/api/search?people=Alice&people=Bob&limit=10
+Accept: application/json
+
 ### Get an image by id (replace with an id from a search result)
 @imageId = 00000000-0000-0000-0000-000000000000
 GET {{SemanticImageSearch.API_HostAddress}}/api/images/{{imageId}}

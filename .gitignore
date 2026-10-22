@@ -43,3 +43,8 @@ Thumbs.db
 appsettings.*.local.json
 *.env
 .env.*
+
+
+# Reference faces (personal photos)
+ReferenceFaces/*
+!ReferenceFaces/.gitkeep

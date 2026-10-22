@@ -9,6 +9,7 @@ namespace SemanticImageSearch.Core.Models
     {
         public string FilePath { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
+        public List<string> PeopleNames { get; set; } = [];
         public float[] Vector { get; set; } = Array.Empty<float>();
         public DateTime LastModifiedUtc { get; set; }
         public DateTime DateTaken { get; set; }

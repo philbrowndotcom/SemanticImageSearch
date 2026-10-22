@@ -63,6 +63,13 @@ public class QdrantVectorService : IVectorDatabaseService
                     {
                         ["file_path"] = record.FilePath,
                         ["description"] = record.Description,
+                        ["people_names"] = new Value
+                        {
+                            ListValue = new ListValue
+                            {
+                                Values = { record.PeopleNames.Select(name => new Value { StringValue = name }) }
+                            }
+                        },
                         ["last_modified_utc"] = record.LastModifiedUtc.ToString("o"),
                         ["date_taken"] = record.DateTaken.ToString("o")
                     }

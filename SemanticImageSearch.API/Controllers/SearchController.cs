@@ -29,14 +29,21 @@ public class SearchController : ControllerBase
 
     [HttpGet]
     public async Task<IActionResult> Search(
-        [FromQuery] string query,
+        [FromQuery] string? query,
         [FromQuery] int limit = 10,
         [FromQuery] DateTime? from = null,
-        [FromQuery] DateTime? to = null)
+        [FromQuery] DateTime? to = null,
+        [FromQuery] string[]? people = null)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        var selectedPeople = people?
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? [];
+
+        if (string.IsNullOrWhiteSpace(query) && selectedPeople.Length == 0 && !from.HasValue && !to.HasValue)
         {
-            return BadRequest("Query parameter is required.");
+            return BadRequest("Provide a query, a date range, or at least one person.");
         }
 
         if (from.HasValue && to.HasValue && from.Value.Date > to.Value.Date)
@@ -48,29 +55,31 @@ public class SearchController : ControllerBase
 
         try
         {
-            // 1. Generate text embedding for the search query via Ollama
-            float[] queryVector = await GetEmbeddingAsync(query);
+            var filter = BuildFilter(from, to, selectedPeople);
 
-            // 2. Search Qdrant for nearest neighbor vectors, optionally filtered by date taken
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                // Filter-only searches do not need Ollama; return matching points in Qdrant order.
+                var page = await _qdrantClient.ScrollAsync(
+                    collectionName: _qdrantOptions.CollectionName,
+                    limit: (uint)limit,
+                    filter: filter,
+                    payloadSelector: true,
+                    vectorsSelector: false);
+
+                return Ok(page.Result.Select(point => ToSearchResult(point.Id.Uuid, point.Payload, 0)));
+            }
+
+            // Generate an embedding only when a text query was supplied.
+            float[] queryVector = await GetEmbeddingAsync(query);
             var searchResults = await _qdrantClient.QueryAsync(
                 collectionName: _qdrantOptions.CollectionName,
                 query: queryVector,
-                filter: BuildDateTakenFilter(from, to),
+                filter: filter,
                 payloadSelector: true,
-                limit: (ulong)limit
-            );
+                limit: (ulong)limit);
 
-            // 3. Map results to a clean response format
-            var results = searchResults.Select(hit => new
-            {
-                Id = hit.Id.Uuid,
-                FilePath = GetString(hit.Payload, "file_path"),
-                Description = GetString(hit.Payload, "description"),
-                DateTaken = GetString(hit.Payload, "date_taken"),
-                Score = hit.Score
-            });
-
-            return Ok(results);
+            return Ok(searchResults.Select(hit => ToSearchResult(hit.Id.Uuid, hit.Payload, hit.Score)));
         }
         catch (Exception ex)
         {
@@ -78,34 +87,68 @@ public class SearchController : ControllerBase
         }
     }
 
-    private static Filter? BuildDateTakenFilter(DateTime? from, DateTime? to)
+    private static Filter? BuildFilter(DateTime? from, DateTime? to, IReadOnlyCollection<string> people)
     {
-        if (!from.HasValue && !to.HasValue)
+        if (!from.HasValue && !to.HasValue && people.Count == 0)
         {
             return null;
         }
 
-        var range = new DatetimeRange();
-        if (from.HasValue)
+        var filter = new Filter();
+
+        if (from.HasValue || to.HasValue)
         {
-            range.Gte = ToTimestamp(from.Value.Date);
-        }
-        if (to.HasValue)
-        {
-            // Inclusive of the entire 'to' day
-            range.Lt = ToTimestamp(to.Value.Date.AddDays(1));
+            var range = new DatetimeRange();
+            if (from.HasValue)
+            {
+                range.Gte = ToTimestamp(from.Value.Date);
+            }
+            if (to.HasValue)
+            {
+                // Inclusive of the entire 'to' day
+                range.Lt = ToTimestamp(to.Value.Date.AddDays(1));
+            }
+
+            filter.Must.Add(new Condition
+            {
+                Field = new FieldCondition { Key = "date_taken", DatetimeRange = range }
+            });
         }
 
-        return new Filter
+        foreach (var person in people)
         {
-            Must =
+            filter.Must.Add(new Condition
             {
-                new Condition
+                Field = new FieldCondition
                 {
-                    Field = new FieldCondition { Key = "date_taken", DatetimeRange = range }
+                    Key = "people_names",
+                    Match = new Match { Keyword = person }
                 }
-            }
-        };
+            });
+        }
+
+        return filter;
+    }
+
+    private static SearchResultDto ToSearchResult(string id, IDictionary<string, Value> payload, double score) =>
+        new(id, GetString(payload, "file_path"), GetString(payload, "description"),
+            GetPeople(payload), GetString(payload, "date_taken"), score);
+
+    private static string[] GetPeople(IDictionary<string, Value> payload, string key = "people_names")
+    {
+        if (!payload.TryGetValue(key, out var value) || value.ListValue is null)
+        {
+            // Supports points created before people_names became an array.
+            var legacy = value?.StringValue;
+            return string.IsNullOrWhiteSpace(legacy)
+                ? []
+                : legacy.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        return value.ListValue.Values
+            .Select(item => item.StringValue)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToArray();
     }
 
     // Dates from the UI are calendar days in the user's local time, matching how EXIF dates are interpreted.
@@ -127,6 +170,14 @@ public class SearchController : ControllerBase
         var result = await response.Content.ReadFromJsonAsync<OllamaEmbeddingResponse>();
         return result?.Embedding ?? throw new InvalidOperationException("Failed to generate embedding.");
     }
+
+public sealed record SearchResultDto(
+    string Id,
+    string? FilePath,
+    string? Description,
+    string[] PeopleNames,
+    string? DateTaken,
+    double Score);
 }
 
 public class OllamaEmbeddingResponse
