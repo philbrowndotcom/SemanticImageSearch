@@ -6,12 +6,13 @@ using SemanticImageSearch.Core.Services;
 
 class Program
 {
+    private const float FaceMatchThreshold = 0.45f;
+
     private static async Task<List<string>> IdentifyPeopleAsync(
         IFaceDetector detector,
         IFaceRecognizer recognizer,
         IFaceRegistry registry,
-        string imagePath,
-        float threshold = 0.45f)
+        string imagePath)
     {
         var detectedFaces = await detector.DetectFacesAsync(imagePath);
         var names = new List<string>();
@@ -21,7 +22,7 @@ class Program
             var embedding = await recognizer.GenerateFaceEmbeddingAsync(imagePath, face);
             var closest = registry.FindClosest(embedding);
 
-            if (closest != null && closest.Similarity >= threshold && !string.IsNullOrWhiteSpace(closest.Name))
+            if (closest != null && closest.Similarity >= FaceMatchThreshold && !string.IsNullOrWhiteSpace(closest.Name))
             {
                 names.Add(closest.Name);
             }
@@ -33,29 +34,24 @@ class Program
             .ToList();
     }
 
-    static async Task Main(string[] args)
+    // Prints per-face matches for a sample of photos so the threshold and reference faces can be tuned.
+    private static async Task RunFaceMatchingDiagnosticAsync(
+        IFaceDetector detector,
+        IFaceRecognizer recognizer,
+        IFaceRegistry registry,
+        IndexerOptions options)
     {
-        // --- Face Detection, Recognition & Registry Batch Test ---
-        var detectorModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "2.5g_bnkps.onnx");
-        var recognizerModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "w600k_mbf.onnx");
+        string targetFolder = options.FaceTestPath;
+        if (!Directory.Exists(targetFolder))
+        {
+            Console.WriteLine($"[Batch Face Matching] Skipped, directory not found: '{targetFolder}'");
+            return;
+        }
 
-        using var detector = new ScrfdFaceDetector(detectorModelPath);
-        using var recognizer = new ArcFaceRecognizer(recognizerModelPath);
-        var registry = new FaceRegistry(detector, recognizer);
-
-        // 1. Locate and load reference faces
-        string refFacesDir = Directory.Exists("ReferenceFaces")
-            ? Path.GetFullPath("ReferenceFaces")
-            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "ReferenceFaces"));
-
-        await registry.LoadReferencesAsync(refFacesDir);
-
-        // 2. Scan a batch of 100 photos from the target folder
-        string targetFolder = @"D:\Media\images\Natis Phone 4_23_16";
-        var supportedExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".webp" };
+        var supportedExts = new HashSet<string>(options.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
         var files = Directory.GetFiles(targetFolder, "*.*", SearchOption.AllDirectories)
             .Where(f => supportedExts.Contains(Path.GetExtension(f)))
-            .Take(100)
+            .Take(options.FaceTestLimit)
             .ToList();
 
         Console.WriteLine($"\n[Batch Face Matching] Scanning {files.Count} photos from: {targetFolder}\n");
@@ -79,7 +75,7 @@ class Program
                 var embedding = await recognizer.GenerateFaceEmbeddingAsync(file, face);
                 var closest = registry.FindClosest(embedding);
 
-                if (closest != null && closest.Similarity >= 0.45f)
+                if (closest != null && closest.Similarity >= FaceMatchThreshold)
                 {
                     matchCounts[closest.Name] = matchCounts.GetValueOrDefault(closest.Name) + 1;
                     Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): \"{closest.Name}\" (Match: {closest.Similarity:P1})");
@@ -99,20 +95,22 @@ class Program
         Console.WriteLine($"SUMMARY of {files.Count} photos:");
         Console.WriteLine($"   Photos with faces: {photosWithFaces} / {files.Count}");
         Console.WriteLine($"   Total faces found: {totalFacesFound}");
-        Console.WriteLine($"   Identified people (>= 45%):");
+        Console.WriteLine($"   Identified people (>= {FaceMatchThreshold:P0}):");
         foreach (var (person, count) in matchCounts.OrderByDescending(kv => kv.Value))
         {
             Console.WriteLine($"     - {person}: {count} time(s)");
         }
         Console.WriteLine($"========================================\n");
+    }
 
-        //return; // Stop here so we only test face recognition for now
-
-        // 1. Load settings: appsettings.json < environment variables (SIS_ prefix) < command line
+    static async Task Main(string[] args)
+    {
+        // 1. Load settings: appsettings.json < appsettings.Local.json (git-ignored) < environment variables (SIS_ prefix) < command line
         //    e.g. --Indexer:PictureLibraryPath "C:\Photos" or --path "C:\Photos"
         var configuration = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: true)
+            .AddJsonFile("appsettings.Local.json", optional: true)
             .AddEnvironmentVariables(prefix: "SIS_")
             .AddCommandLine(args, new Dictionary<string, string>
             {
@@ -134,33 +132,53 @@ class Program
             return;
         }
 
+        // 2. Load face models and reference faces
+        var detectorModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "2.5g_bnkps.onnx");
+        var recognizerModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "w600k_mbf.onnx");
+
+        using var detector = new ScrfdFaceDetector(detectorModelPath);
+        using var recognizer = new ArcFaceRecognizer(recognizerModelPath);
+        var registry = new FaceRegistry(detector, recognizer);
+
+        string refFacesDir = Directory.Exists("ReferenceFaces")
+            ? Path.GetFullPath("ReferenceFaces")
+            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "ReferenceFaces"));
+
+        await registry.LoadReferencesAsync(refFacesDir);
+
+        // 3. Optional face-matching diagnostic
+        if (!string.IsNullOrWhiteSpace(indexerOptions.FaceTestPath))
+        {
+            await RunFaceMatchingDiagnosticAsync(detector, recognizer, registry, indexerOptions);
+        }
+
         Console.WriteLine($"Initializing SemanticImageSearch Indexer...");
         Console.WriteLine($"  Pictures: {pictureLibraryPath}");
         Console.WriteLine($"  Qdrant:   {qdrantOptions.Host}:{qdrantOptions.Port} / {qdrantOptions.CollectionName}");
         Console.WriteLine($"  Ollama:   {ollamaOptions.BaseUrl} ({ollamaOptions.VisionModel}, {ollamaOptions.EmbeddingModel})");
 
-        // 2. Instantiate services (using standard HttpClient and Qdrant client)
+        // 4. Instantiate services (using standard HttpClient and Qdrant client)
         using var httpClient = new HttpClient();
         ILLaVAEmbeddingService aiService = new OllamaAIService(httpClient, ollamaOptions);
         IVectorDatabaseService dbService = new QdrantVectorService(qdrantOptions);
 
-        // 3. Ensure Qdrant collection exists
+        // 5. Ensure Qdrant collection exists
         Console.WriteLine("Connecting to Qdrant and ensuring collection exists...");
         await dbService.EnsureCollectionExistsAsync(vectorSize: qdrantOptions.VectorSize);
 
-        // 4. Scan directory for supported image formats
+        // 6. Scan directory for supported image formats
         var supportedExtensions = new HashSet<string>(indexerOptions.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
         var imageFiles = Directory.GetFiles(pictureLibraryPath, "*.*", SearchOption.AllDirectories)
             .Where(file => supportedExtensions.Contains(Path.GetExtension(file)))
             .ToArray();
 
-        // 5. Skip images that are already indexed
+        // 7. Skip images that are already indexed
         var indexedPaths = await dbService.GetIndexedFilePathsAsync();
         var newFiles = imageFiles.Where(file => !indexedPaths.Contains(file)).ToArray();
 
         Console.WriteLine($"Found {imageFiles.Length} images; {imageFiles.Length - newFiles.Length} already indexed, {newFiles.Length} new to process.");
 
-        // 6. Iterate and process new images
+        // 8. Iterate and process new images
         foreach (var file in newFiles)
         {
             try
@@ -207,4 +225,3 @@ class Program
         Console.WriteLine("\nIndexing complete!");
     }
 }
-
