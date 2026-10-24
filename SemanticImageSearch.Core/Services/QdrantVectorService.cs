@@ -45,6 +45,18 @@ public class QdrantVectorService : IVectorDatabaseService
         {
             // Index already exists or cannot be created; range filters still work without it, just slower.
         }
+
+        try
+        {
+            await _client.CreatePayloadIndexAsync(
+                collectionName: CollectionName,
+                fieldName: "people_names",
+                schemaType: PayloadSchemaType.Keyword);
+        }
+        catch (Grpc.Core.RpcException)
+        {
+            // Index already exists or cannot be created; people filters still work without it, just slower.
+        }
     }
 
     public async Task UpsertImageAsync(ImageRecord record)

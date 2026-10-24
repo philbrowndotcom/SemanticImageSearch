@@ -162,7 +162,7 @@ function App() {
 
         <div className="actions">
           <button type="submit" disabled={loading || (!query.trim() && !hasFilters) || dateRangeInvalid}>
-            {loading ? 'Searching…' : 'Search'}
+            {loading ? 'Searching...' : 'Search'}
           </button>
           <button type="button" className="secondary" onClick={handleClear}>
             Clear
@@ -195,7 +195,9 @@ function App() {
                   {(r.score * 100).toFixed(1)}%
                 </span>
               </div>
-              {r.peopleNames && <p className="people-names"><strong>People:</strong> {r.peopleNames}</p>}
+              {r.peopleNames?.length > 0 && (
+                <p className="people-names"><strong>People:</strong> {r.peopleNames.join(', ')}</p>
+              )}
               {r.description && <p className="description">{r.description}</p>}
             </div>
           </li>

@@ -71,7 +71,7 @@ class Program
 
             photosWithFaces++;
             totalFacesFound += faces.Count;
-            Console.WriteLine($"📷 {Path.GetFileName(file)} -> {faces.Count} face(s):");
+            Console.WriteLine($"{Path.GetFileName(file)} -> {faces.Count} face(s):");
 
             for (int i = 0; i < faces.Count; i++)
             {
@@ -82,21 +82,21 @@ class Program
                 if (closest != null && closest.Similarity >= 0.45f)
                 {
                     matchCounts[closest.Name] = matchCounts.GetValueOrDefault(closest.Name) + 1;
-                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ⭐️ \"{closest.Name}\" (Match: {closest.Similarity:P1})");
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): \"{closest.Name}\" (Match: {closest.Similarity:P1})");
                 }
                 else if (closest != null)
                 {
-                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ❓ Unknown (Closest: \"{closest.Name}\" @ {closest.Similarity:P1})");
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): Unknown (Closest: \"{closest.Name}\" @ {closest.Similarity:P1})");
                 }
                 else
                 {
-                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): ❓ Unknown face");
+                    Console.WriteLine($"   Face #{i + 1} ({face.Confidence:P0}): Unknown face");
                 }
             }
         }
 
         Console.WriteLine($"\n========================================");
-        Console.WriteLine($"📊 SUMMARY of {files.Count} photos:");
+        Console.WriteLine($"SUMMARY of {files.Count} photos:");
         Console.WriteLine($"   Photos with faces: {photosWithFaces} / {files.Count}");
         Console.WriteLine($"   Total faces found: {totalFacesFound}");
         Console.WriteLine($"   Identified people (>= 45%):");
@@ -204,7 +204,7 @@ class Program
             }
         }
 
-        Console.WriteLine("\n✨ Indexing complete!");
+        Console.WriteLine("\nIndexing complete!");
     }
 }
 

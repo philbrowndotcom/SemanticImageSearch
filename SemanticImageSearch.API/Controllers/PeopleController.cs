@@ -20,7 +20,8 @@ public class PeopleController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<string>>> Get(CancellationToken cancellationToken)
     {
-        var people = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Case-sensitive so every listed name matches the exact keyword filter used by search.
+        var people = new HashSet<string>(StringComparer.Ordinal);
         PointId? offset = null;
 
         do
@@ -31,35 +32,14 @@ public class PeopleController : ControllerBase
                 offset: offset,
                 payloadSelector: new WithPayloadSelector
                 {
-                    Include = new PayloadIncludeSelector { Fields = { "people_names" } }
+                    Include = new PayloadIncludeSelector { Fields = { PeoplePayload.Key } }
                 },
                 vectorsSelector: false,
                 cancellationToken: cancellationToken);
 
             foreach (var point in page.Result)
             {
-                if (!point.Payload.TryGetValue("people_names", out var value))
-                {
-                    continue;
-                }
-
-                if (value.ListValue is not null)
-                {
-                    foreach (var name in value.ListValue.Values.Select(item => item.StringValue))
-                    {
-                        if (!string.IsNullOrWhiteSpace(name))
-                        {
-                            people.Add(name.Trim());
-                        }
-                    }
-                }
-                else
-                {
-                    foreach (var name in value.StringValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    {
-                        people.Add(name);
-                    }
-                }
+                people.UnionWith(PeoplePayload.Read(point.Payload));
             }
 
             offset = page.NextPageOffset;

@@ -121,7 +121,7 @@ public class SearchController : ControllerBase
             {
                 Field = new FieldCondition
                 {
-                    Key = "people_names",
+                    Key = PeoplePayload.Key,
                     Match = new Match { Keyword = person }
                 }
             });
@@ -132,24 +132,7 @@ public class SearchController : ControllerBase
 
     private static SearchResultDto ToSearchResult(string id, IDictionary<string, Value> payload, double score) =>
         new(id, GetString(payload, "file_path"), GetString(payload, "description"),
-            GetPeople(payload), GetString(payload, "date_taken"), score);
-
-    private static string[] GetPeople(IDictionary<string, Value> payload, string key = "people_names")
-    {
-        if (!payload.TryGetValue(key, out var value) || value.ListValue is null)
-        {
-            // Supports points created before people_names became an array.
-            var legacy = value?.StringValue;
-            return string.IsNullOrWhiteSpace(legacy)
-                ? []
-                : legacy.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        }
-
-        return value.ListValue.Values
-            .Select(item => item.StringValue)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .ToArray();
-    }
+            PeoplePayload.Read(payload), GetString(payload, "date_taken"), score);
 
     // Dates from the UI are calendar days in the user's local time, matching how EXIF dates are interpreted.
     private static Google.Protobuf.WellKnownTypes.Timestamp ToTimestamp(DateTime localDate) =>

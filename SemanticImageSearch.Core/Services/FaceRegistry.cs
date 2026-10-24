@@ -47,9 +47,10 @@ public class FaceRegistry : IFaceRegistry
                 // Person name is either the subfolder name or the file name without extension
                 string relativePath = Path.GetRelativePath(referenceDirectoryPath, file);
                 string? subDir = Path.GetDirectoryName(relativePath);
-                string personName = !string.IsNullOrWhiteSpace(subDir) && subDir != "."
+                // Trimmed so the stored name matches the exact keyword filter used by search
+                string personName = (!string.IsNullOrWhiteSpace(subDir) && subDir != "."
                     ? subDir
-                    : Path.GetFileNameWithoutExtension(file);
+                    : Path.GetFileNameWithoutExtension(file)).Trim();
 
                 using var image = Image.Load<Rgb24>(file);
                 var faces = await _detector.DetectFacesAsync(file, cancellationToken);
