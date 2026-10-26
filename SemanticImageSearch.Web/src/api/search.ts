@@ -27,24 +27,26 @@ export async function searchImages(
 
   const response = await fetch(`/api/search?${params.toString()}`, { signal })
   if (!response.ok) {
-    let message = `Search failed (${response.status})`
-    try {
-      const body = await response.text()
-      if (body) {
-        try {
-          const parsed = JSON.parse(body)
-          message = parsed.error ?? parsed.title ?? (typeof parsed === 'string' ? parsed : message)
-        } catch {
-          message = body
-        }
-      }
-    } catch {
-      // ignore body read errors
-    }
-    throw new Error(message)
+    throw new Error(await readErrorMessage(response, `Search failed (${response.status})`))
   }
 
   return (await response.json()) as SearchResult[]
+}
+
+// Uses the API's { error } message (e.g. "Cannot reach Qdrant...") when there is one.
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.text()
+    if (!body) return fallback
+    try {
+      const parsed = JSON.parse(body)
+      return parsed.error ?? parsed.title ?? (typeof parsed === 'string' ? parsed : fallback)
+    } catch {
+      return body
+    }
+  } catch {
+    return fallback
+  }
 }
 
 export function imageUrl(id: string): string {
@@ -54,7 +56,7 @@ export function imageUrl(id: string): string {
 export async function getPeople(signal?: AbortSignal): Promise<string[]> {
   const response = await fetch('/api/people', { signal })
   if (!response.ok) {
-    throw new Error(`Could not load people (${response.status})`)
+    throw new Error(await readErrorMessage(response, `Could not load people (${response.status})`))
   }
 
   return (await response.json()) as string[]

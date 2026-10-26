@@ -85,7 +85,7 @@ Both models run in-process through **ONNX Runtime**, with image preprocessing do
 
 | Project | Type | Purpose |
 |---|---|---|
-| `SemanticImageSearch.Core` | Class library (.NET 10) | Shared models, options and services: `OllamaAIService` (captions and embeddings), `QdrantVectorService` (collection, payload indexes, upserts, indexed-path lookup), `ExifDateReader`, `ScrfdFaceDetector`, `ArcFaceRecognizer` and `FaceRegistry`. Also contains the bundled ONNX models. |
+| `SemanticImageSearch.Core` | Class library (.NET 10) | Shared models, options and services: `OllamaAIService` (captions and embeddings), `QdrantVectorService` (collection, payload indexes, upserts, indexed-path lookup, filtered search, people and image lookup), `ImageSearchService` (search, people and image-file logic behind the API controllers), `ExifDateReader`, `ScrfdFaceDetector`, `ArcFaceRecognizer` and `FaceRegistry`. Also contains the bundled ONNX models. |
 | `SemanticImageSearch.Indexer` | Console app (.NET 10) | Loads the reference faces, scans the picture folder, and captions, face-tags, embeds and indexes each new image. |
 | `SemanticImageSearch.API` | ASP.NET Core Web API (.NET 10) | `GET /api/search`, `GET /api/people` and `GET /api/images/{id}`. |
 | `SemanticImageSearch.Web` | React 19 + TypeScript + Vite | Search UI with text, people, date-range and result-count controls, plus a thumbnail grid. |
@@ -134,6 +134,8 @@ dotnet run --project SemanticImageSearch.Indexer -- --path "C:\Path\To\Your\Phot
 ```
 
 The Indexer registers the reference faces, creates the `image_library` collection and its payload indexes if needed, then prints each caption as it goes. A failure on one image is logged and skipped, so it doesn't stop the run.
+
+Before doing anything else, the Indexer checks that Ollama is reachable, that both models are installed, and that Qdrant is reachable. If not, it prints what's wrong (for example `ollama pull llava`) and exits. If Ollama or Qdrant stops responding partway through, the Indexer stops instead of failing every remaining image. Run it again once Ollama is back and it continues where it left off.
 
 #### Optional: face-matching diagnostic
 
@@ -215,7 +217,8 @@ Response:
 
 - `score` is the cosine similarity between the query and the caption (higher means closer).
 - Filter-only searches aren't ranked: they return matches in Qdrant's storage order with a score of `0`.
-- The request returns `400` if there is no query and no filter, or if `from` is after `to`, and `500` with an `{ "error": "..." }` body if Qdrant or Ollama fails.
+- The request returns `400` if there is no query and no filter, or if `from` is after `to`. It returns `503` with an `{ "error": "..." }` body if Qdrant can't be reached, or if a text query is sent while Ollama is down or `nomic-embed-text` isn't installed (filter-only searches still work then). Any other Qdrant or Ollama failure returns `500` with the same body.
+- `/api/people` and `/api/images/{id}` also return `503` with an `{ "error": "..." }` body when Qdrant can't be reached.
 - Date filters are interpreted as calendar days in the API server's local time zone, which matches how EXIF dates are stored (see below).
 
 ### `GET /api/people`

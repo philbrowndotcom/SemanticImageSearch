@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using SemanticImageSearch.Core.Exceptions;
 using SemanticImageSearch.Core.Interfaces;
 using SemanticImageSearch.Core.Models;
 using SemanticImageSearch.Core.Options;
@@ -105,6 +106,19 @@ class Program
 
     static async Task Main(string[] args)
     {
+        try
+        {
+            await RunAsync(args);
+        }
+        catch (ServiceUnavailableException ex)
+        {
+            // Ollama or Qdrant is down: print the reason instead of a stack trace.
+            Console.WriteLine($"\n{ex.Message}");
+        }
+    }
+
+    private static async Task RunAsync(string[] args)
+    {
         // 1. Load settings: appsettings.json < appsettings.Local.json (git-ignored) < environment variables (SIS_ prefix) < command line
         //    e.g. --Indexer:PictureLibraryPath "C:\Photos" or --path "C:\Photos"
         var configuration = new ConfigurationBuilder()
@@ -132,6 +146,17 @@ class Program
             return;
         }
 
+        // Check Ollama (with both models) and Qdrant before the slow face-model setup, so a missing service fails fast.
+        using var httpClient = new HttpClient();
+        ILLaVAEmbeddingService aiService = new OllamaAIService(httpClient, ollamaOptions);
+        IVectorDatabaseService dbService = new QdrantVectorService(qdrantOptions);
+
+        Console.WriteLine("Checking Ollama models...");
+        await aiService.EnsureModelsAvailableAsync([ollamaOptions.VisionModel, ollamaOptions.EmbeddingModel]);
+
+        Console.WriteLine("Connecting to Qdrant and ensuring collection exists...");
+        await dbService.EnsureCollectionExistsAsync(vectorSize: qdrantOptions.VectorSize);
+
         // 2. Load face models and reference faces
         var detectorModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "2.5g_bnkps.onnx");
         var recognizerModelPath = Path.Combine(AppContext.BaseDirectory, "MLModels", "w600k_mbf.onnx");
@@ -157,30 +182,22 @@ class Program
         Console.WriteLine($"  Qdrant:   {qdrantOptions.Host}:{qdrantOptions.Port} / {qdrantOptions.CollectionName}");
         Console.WriteLine($"  Ollama:   {ollamaOptions.BaseUrl} ({ollamaOptions.VisionModel}, {ollamaOptions.EmbeddingModel})");
 
-        // 4. Instantiate services (using standard HttpClient and Qdrant client)
-        using var httpClient = new HttpClient();
-        ILLaVAEmbeddingService aiService = new OllamaAIService(httpClient, ollamaOptions);
-        IVectorDatabaseService dbService = new QdrantVectorService(qdrantOptions);
-
-        // 5. Ensure Qdrant collection exists
-        Console.WriteLine("Connecting to Qdrant and ensuring collection exists...");
-        await dbService.EnsureCollectionExistsAsync(vectorSize: qdrantOptions.VectorSize);
-
-        // 6. Scan directory for supported image formats
+        // 4. Scan directory for supported image formats
         var supportedExtensions = new HashSet<string>(indexerOptions.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
         var imageFiles = Directory.GetFiles(pictureLibraryPath, "*.*", SearchOption.AllDirectories)
             .Where(file => supportedExtensions.Contains(Path.GetExtension(file)))
             .ToArray();
 
-        // 7. Skip images that are already indexed
+        // 5. Skip images that are already indexed
         var indexedPaths = await dbService.GetIndexedFilePathsAsync();
         var newFiles = imageFiles.Where(file => !indexedPaths.Contains(file)).ToArray();
 
         Console.WriteLine($"Found {imageFiles.Length} images; {imageFiles.Length - newFiles.Length} already indexed, {newFiles.Length} new to process.");
 
-        // 8. Iterate and process new images
-        foreach (var file in newFiles)
+        // 6. Iterate and process new images
+        for (int i = 0; i < newFiles.Length; i++)
         {
+            var file = newFiles[i];
             try
             {
                 var fileInfo = new FileInfo(file);
@@ -215,6 +232,13 @@ class Program
                 Console.Write("  -> Upserting to Qdrant...");
                 await dbService.UpsertImageAsync(record);
                 Console.WriteLine(" Success!");
+            }
+            catch (ServiceUnavailableException ex)
+            {
+                // Every remaining image would fail the same way. Already-indexed images are skipped, so a re-run resumes here.
+                Console.WriteLine($"\n{ex.Message}");
+                Console.WriteLine($"Stopping: {newFiles.Length - i} image(s) not indexed. Run the Indexer again once the service is back.");
+                return;
             }
             catch (Exception ex)
             {

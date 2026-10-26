@@ -1,54 +1,25 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
-using Qdrant.Client;
-using SemanticImageSearch.Core.Options;
+using SemanticImageSearch.Core.Interfaces;
 
 [ApiController]
 [Route("api/[controller]")]
 public class ImagesController : ControllerBase
 {
-    private static readonly Dictionary<string, string> ContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        [".jpg"] = "image/jpeg",
-        [".jpeg"] = "image/jpeg",
-        [".png"] = "image/png",
-        [".webp"] = "image/webp"
-    };
+    private readonly IImageSearchService _searchService;
 
-    private readonly QdrantClient _qdrantClient;
-    private readonly QdrantOptions _qdrantOptions;
-
-    public ImagesController(QdrantClient qdrantClient, IOptions<QdrantOptions> qdrantOptions)
+    public ImagesController(IImageSearchService searchService)
     {
-        _qdrantClient = qdrantClient;
-        _qdrantOptions = qdrantOptions.Value;
+        _searchService = searchService;
     }
 
-    // Images are resolved by point id (never by raw path) to prevent arbitrary file access.
     [HttpGet("{id:guid}")]
     [ResponseCache(Duration = 3600)]
-    public async Task<IActionResult> Get(Guid id)
+    public async Task<IActionResult> Get(Guid id, CancellationToken cancellationToken)
     {
-        var points = await _qdrantClient.RetrieveAsync(
-            collectionName: _qdrantOptions.CollectionName,
-            id: id,
-            withPayload: true,
-            withVectors: false);
+        var image = await _searchService.GetImageFileAsync(id, cancellationToken);
 
-        var point = points.FirstOrDefault();
-        if (point is null || !point.Payload.TryGetValue("file_path", out var pathValue))
-        {
-            return NotFound();
-        }
-
-        var filePath = pathValue.StringValue;
-        if (string.IsNullOrWhiteSpace(filePath) ||
-            !ContentTypes.TryGetValue(Path.GetExtension(filePath), out var contentType) ||
-            !System.IO.File.Exists(filePath))
-        {
-            return NotFound();
-        }
-
-        return PhysicalFile(filePath, contentType, enableRangeProcessing: true);
+        return image is null
+            ? NotFound()
+            : PhysicalFile(image.Path, image.ContentType, enableRangeProcessing: true);
     }
 }
